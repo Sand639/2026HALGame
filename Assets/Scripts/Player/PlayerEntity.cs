@@ -17,6 +17,7 @@ namespace MyGame
         [Header("Camera Based Move (optional)")]
         [SerializeField] private Transform cameraTransform;
 
+
         private CharacterController cc;
 
         private Vector2 moveInput;
@@ -29,6 +30,8 @@ namespace MyGame
 
             if (cameraTransform == null && Camera.main != null)
                 cameraTransform = Camera.main.transform;
+
+            
         }
 
         public override void UpdateEntity()
@@ -74,7 +77,10 @@ namespace MyGame
                 Quaternion targetRot = Quaternion.LookRotation(moveDir);
                 transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, 12f * Time.deltaTime);
             }
+           
         }
+
+       
 
         // Invoke Unity Events 用
         public void OnMove(InputAction.CallbackContext ctx)
