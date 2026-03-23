@@ -19,6 +19,9 @@ public class PlayerMeleeAttack : MonoBehaviour
     [Header("Reference")]
     [SerializeField] private Transform attackOrigin;
 
+    [Header("Visual")]
+    [SerializeField] private AttackAreaVisualizer attackAreaVisualizer;
+
     [Header("Debug")]
     [SerializeField] private bool drawGizmos = true;
 
@@ -27,6 +30,21 @@ public class PlayerMeleeAttack : MonoBehaviour
     private void Reset()
     {
         attackOrigin = transform;
+    }
+
+    private void Start()
+    {
+        if (attackOrigin == null)
+        {
+            attackOrigin = transform;
+        }
+
+        if (attackAreaVisualizer != null)
+        {
+            attackAreaVisualizer.SetFollowTarget(attackOrigin);
+            attackAreaVisualizer.SetShape(attackDistance, attackAngle);
+            attackAreaVisualizer.Hide();
+        }
     }
 
     private void Update()
@@ -49,6 +67,13 @@ public class PlayerMeleeAttack : MonoBehaviour
     {
         isAttacking = true;
 
+        if (attackAreaVisualizer != null)
+        {
+            attackAreaVisualizer.SetFollowTarget(attackOrigin != null ? attackOrigin : transform);
+            attackAreaVisualizer.SetShape(attackDistance, attackAngle);
+            attackAreaVisualizer.Show();
+        }
+
         float elapsed = 0f;
         HashSet<Health> hitTargets = new HashSet<Health>();
 
@@ -58,6 +83,11 @@ public class PlayerMeleeAttack : MonoBehaviour
 
             yield return new WaitForSeconds(attackInterval);
             elapsed += attackInterval;
+        }
+
+        if (attackAreaVisualizer != null)
+        {
+            attackAreaVisualizer.Hide();
         }
 
         isAttacking = false;
@@ -80,18 +110,37 @@ public class PlayerMeleeAttack : MonoBehaviour
             if (targetHealth.IsDead) continue;
             if (hitTargets.Contains(targetHealth)) continue;
 
-            Vector3 toTarget = targetHealth.transform.position - center;
-            toTarget.y = 0f;
+            // コライダー上で、攻撃原点から一番近い点
+            Vector3 closestPoint = col.ClosestPoint(center);
+
+            // ClosestPoint が中心と同じになるケース対策
+            // （攻撃原点がコライダー内部にある場合など）
+            Vector3 toTargetPoint = closestPoint - center;
+            toTargetPoint.y = 0f;
 
             Vector3 forward = origin.forward;
             forward.y = 0f;
 
-            if (toTarget.sqrMagnitude <= 0.0001f) continue;
+            // もし very close すぎる場合は、そのコライダー中心も補助的に使う
+            if (toTargetPoint.sqrMagnitude <= 0.0001f)
+            {
+                Vector3 fallback = col.bounds.center - center;
+                fallback.y = 0f;
+                toTargetPoint = fallback;
+            }
 
-            float angle = Vector3.Angle(forward.normalized, toTarget.normalized);
+            if (toTargetPoint.sqrMagnitude <= 0.0001f)
+            {
+                // それでもゼロなら真上重なり等なので当てる
+                targetHealth.TakeDamage(damage);
+                hitTargets.Add(targetHealth);
+                continue;
+            }
+
+            float angle = Vector3.Angle(forward.normalized, toTargetPoint.normalized);
             if (angle > attackAngle * 0.5f) continue;
 
-            float distance = toTarget.magnitude;
+            float distance = toTargetPoint.magnitude;
             if (distance > attackDistance) continue;
 
             targetHealth.TakeDamage(damage);
