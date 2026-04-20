@@ -9,8 +9,14 @@ public class ConnectedClusterDestruction : MonoBehaviour
     [SerializeField] private bool autoMarkLowestAsSupport = true;
     [SerializeField] private float supportHeightTolerance = 0.05f;
 
+    [Header("Link Strength")]
+    [SerializeField] private float baseLinkHp = 10f;
+    [SerializeField] private float supportBonusMultiplier = 2f;
+
     [Header("Damage")]
     [SerializeField] private float breakRadius = 1.5f;
+    [SerializeField] private float damageAmount = 6f;
+    [SerializeField] private AnimationCurve damageFalloff = AnimationCurve.EaseInOut(0f, 1f, 1f, 0f);
     [SerializeField] private float detachImpulse = 2.0f;
     [SerializeField] private float upwardImpulse = 0.4f;
 
@@ -32,7 +38,7 @@ public class ConnectedClusterDestruction : MonoBehaviour
 
         if (autoCollectChildren)
         {
-            ClusterPiece[] found = GetComponentsInChildren<ClusterPiece>();
+            ClusterPiece[] found = GetComponentsInChildren<ClusterPiece>(true);
             for (int i = 0; i < found.Length; i++)
             {
                 if (found[i].transform == transform) continue;
@@ -43,47 +49,94 @@ public class ConnectedClusterDestruction : MonoBehaviour
         for (int i = 0; i < pieces.Count; i++)
         {
             pieces[i].pieceId = i;
-            pieces[i].neighbors.Clear();
-            pieces[i].brokenLinks.Clear();
-            pieces[i].isDetached = false;
-
-            if (pieces[i].rb != null)
-            {
-                pieces[i].rb.isKinematic = true;
-                pieces[i].rb.useGravity = false;
-                pieces[i].rb.linearVelocity = Vector3.zero;
-                pieces[i].rb.angularVelocity = Vector3.zero;
-            }
+            pieces[i].CaptureInitialTransform();
+            pieces[i].ResetRuntimeState();
         }
-
-        BuildNeighbors();
 
         if (autoMarkLowestAsSupport)
         {
             MarkLowestPiecesAsSupport();
         }
+
+        BuildLinks();
     }
 
-    private void BuildNeighbors()
+    private void BuildLinks()
     {
         float sqr = neighborDistance * neighborDistance;
 
         for (int i = 0; i < pieces.Count; i++)
         {
-            Vector3 a = pieces[i].transform.position;
+            Vector3 aPos = pieces[i].transform.position;
+            Bounds aBounds = GetPieceWorldBounds(pieces[i]);
 
             for (int j = i + 1; j < pieces.Count; j++)
             {
-                Vector3 b = pieces[j].transform.position;
-                float distSqr = (a - b).sqrMagnitude;
+                Vector3 bPos = pieces[j].transform.position;
+                Bounds bBounds = GetPieceWorldBounds(pieces[j]);
 
+                bool linked = false;
+
+                float distSqr = (aPos - bPos).sqrMagnitude;
                 if (distSqr <= sqr)
                 {
-                    pieces[i].neighbors.Add(j);
-                    pieces[j].neighbors.Add(i);
+                    linked = true;
                 }
+                else
+                {
+                    float boundsGap = BoundsGap(aBounds, bBounds);
+                    if (boundsGap <= neighborDistance)
+                    {
+                        linked = true;
+                    }
+                }
+
+                if (!linked) continue;
+
+                float hp = CalculateLinkHp(pieces[i], pieces[j]);
+                pieces[i].AddLink(j, hp);
+                pieces[j].AddLink(i, hp);
             }
         }
+    }
+
+    private Bounds GetPieceWorldBounds(ClusterPiece piece)
+    {
+        Collider c = piece.col;
+        if (c != null)
+        {
+            return c.bounds;
+        }
+
+        Renderer r = piece.GetComponent<Renderer>();
+        if (r != null)
+        {
+            return r.bounds;
+        }
+
+        return new Bounds(piece.transform.position, Vector3.zero);
+    }
+
+    private float BoundsGap(Bounds a, Bounds b)
+    {
+        float dx = Mathf.Max(0f, Mathf.Max(a.min.x - b.max.x, b.min.x - a.max.x));
+        float dy = Mathf.Max(0f, Mathf.Max(a.min.y - b.max.y, b.min.y - a.max.y));
+        float dz = Mathf.Max(0f, Mathf.Max(a.min.z - b.max.z, b.min.z - a.max.z));
+
+        return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    private float CalculateLinkHp(ClusterPiece a, ClusterPiece b)
+    {
+        float hp = baseLinkHp;
+        hp *= 0.5f * (a.strengthMultiplier + b.strengthMultiplier);
+
+        if (a.isSupport || b.isSupport)
+        {
+            hp *= supportBonusMultiplier;
+        }
+
+        return hp;
     }
 
     private void MarkLowestPiecesAsSupport()
@@ -94,24 +147,24 @@ public class ConnectedClusterDestruction : MonoBehaviour
 
         for (int i = 0; i < pieces.Count; i++)
         {
-            float y = pieces[i].transform.position.y;
+            float y = GetPieceWorldBounds(pieces[i]).min.y;
             if (y < minY) minY = y;
         }
 
         for (int i = 0; i < pieces.Count; i++)
         {
-            float y = pieces[i].transform.position.y;
+            float y = GetPieceWorldBounds(pieces[i]).min.y;
             pieces[i].isSupport = y <= minY + supportHeightTolerance;
         }
     }
 
     public void DamageAt(Vector3 hitPoint)
     {
-        BreakLinksNear(hitPoint, breakRadius);
+        DamageLinksNear(hitPoint, breakRadius, damageAmount);
         RecalculateConnectivity(hitPoint);
     }
 
-    private void BreakLinksNear(Vector3 hitPoint, float radius)
+    private void DamageLinksNear(Vector3 hitPoint, float radius, float maxDamage)
     {
         float radiusSqr = radius * radius;
 
@@ -120,23 +173,28 @@ public class ConnectedClusterDestruction : MonoBehaviour
             ClusterPiece a = pieces[i];
             Vector3 aPos = a.transform.position;
 
-            for (int n = 0; n < a.neighbors.Count; n++)
+            for (int n = 0; n < a.links.Count; n++)
             {
-                int otherId = a.neighbors[n];
+                PieceLink link = a.links[n];
+                int otherId = link.otherId;
 
                 if (otherId <= i) continue;
+                if (link.broken) continue;
 
                 ClusterPiece b = pieces[otherId];
-                if (!a.IsLinkedTo(otherId)) continue;
-
                 Vector3 bPos = b.transform.position;
                 Vector3 mid = (aPos + bPos) * 0.5f;
 
-                if ((mid - hitPoint).sqrMagnitude <= radiusSqr)
-                {
-                    a.BreakLink(otherId);
-                    b.BreakLink(i);
-                }
+                float distSqr = (mid - hitPoint).sqrMagnitude;
+                if (distSqr > radiusSqr) continue;
+
+                float dist = Mathf.Sqrt(distSqr);
+                float t = Mathf.Clamp01(dist / radius);
+                float falloff = damageFalloff.Evaluate(t);
+                float damage = maxDamage * falloff;
+
+                a.ApplyDamageToLink(otherId, damage);
+                b.ApplyDamageToLink(i, damage);
             }
         }
     }
@@ -160,12 +218,13 @@ public class ConnectedClusterDestruction : MonoBehaviour
             int current = queue.Dequeue();
             ClusterPiece piece = pieces[current];
 
-            for (int i = 0; i < piece.neighbors.Count; i++)
+            for (int i = 0; i < piece.links.Count; i++)
             {
-                int next = piece.neighbors[i];
+                PieceLink link = piece.links[i];
+                int next = link.otherId;
 
                 if (visited[next]) continue;
-                if (!piece.IsLinkedTo(next)) continue;
+                if (link.broken) continue;
                 if (pieces[next].isDetached) continue;
 
                 visited[next] = true;
@@ -194,7 +253,7 @@ public class ConnectedClusterDestruction : MonoBehaviour
             ClusterPiece piece = pieces[detachedIds[i]];
             piece.ActivatePhysics();
 
-            Vector3 dir = (piece.transform.position - hitPoint);
+            Vector3 dir = piece.transform.position - hitPoint;
             if (dir.sqrMagnitude < 0.0001f)
             {
                 dir = Random.onUnitSphere;
@@ -213,7 +272,7 @@ public class ConnectedClusterDestruction : MonoBehaviour
     {
         if (!drawNeighborGizmos) return;
 
-        ClusterPiece[] all = GetComponentsInChildren<ClusterPiece>();
+        ClusterPiece[] all = GetComponentsInChildren<ClusterPiece>(true);
         if (all == null) return;
 
         for (int i = 0; i < all.Length; i++)
@@ -221,19 +280,22 @@ public class ConnectedClusterDestruction : MonoBehaviour
             ClusterPiece a = all[i];
             if (a == null) continue;
 
-            for (int n = 0; n < a.neighbors.Count; n++)
+            for (int n = 0; n < a.links.Count; n++)
             {
-                int id = a.neighbors[n];
+                PieceLink link = a.links[n];
+                int id = link.otherId;
                 if (id < 0 || id >= all.Length) continue;
 
                 ClusterPiece b = all[id];
                 if (b == null) continue;
+                if (id <= a.pieceId) continue;
 
-                bool linked = !a.brokenLinks.Contains(id);
+                bool linked = !link.broken;
 
                 if (!drawBrokenLinks && !linked) continue;
 
-                Gizmos.color = linked ? Color.cyan : Color.red;
+                float ratio = link.maxHp > 0f ? link.hp / link.maxHp : 0f;
+                Gizmos.color = linked ? Color.Lerp(Color.red, Color.cyan, ratio) : Color.red;
                 Gizmos.DrawLine(a.transform.position, b.transform.position);
             }
 

@@ -40,6 +40,15 @@ public class SimpleShooter : MonoBehaviour
 
         if (Physics.Raycast(ray, out RaycastHit hit, rayDistance))
         {
+            DestructibleObject destructible =
+                hit.collider.GetComponentInParent<DestructibleObject>();
+
+            if (destructible != null)
+            {
+                destructible.BreakAt(hit.point);
+                return;
+            }
+
             ConnectedClusterDestruction cluster =
                 hit.collider.GetComponentInParent<ConnectedClusterDestruction>();
 
